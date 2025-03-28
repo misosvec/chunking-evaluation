@@ -3,3 +3,4 @@ sentence-transformers
 tiktoken
 attrs
 pandas
+fuzzywuzzy
