@@ -7,11 +7,10 @@ import pandas as pd
 import numpy as np
 import json
 from chunking.utils import rigorous_document_search
+import metrics
 
-_QUESTIONS_FILE = 'datasets/questions_df.csv'
-_CORPUS_FILE = 'datasets/state_of_the_union.md'
 
-class Answer:
+class Excerpt:
     def __init__(self, text:str, start: int, end:int):
         self.text = text
         self.start = start
@@ -21,7 +20,7 @@ class Answer:
         return f"ANSWER: {self.text} \n START_INDEX: {self.start} \n END_INDEX: {self.end}"
 
 class Query:
-    def __init__(self, question: str, answers: List[Answer]):
+    def __init__(self, question: str, answers: List[Excerpt]):
         self.question = question
         self.answers = list(answers)
 
@@ -31,47 +30,70 @@ class Query:
             answers += f"{str(ans)}\n"
         return f"QUESTION: {self.question} \n {answers}"
 
-
 class RetrievalEvaluationPipeline():
 
-    def __init__(self, embedding_function):
-        pass
+    def __init__(self, embedding_function, questions_file = 'datasets/questions_df.csv', corpus_file = 'datasets/state_of_the_union.md'):
+        self.questions_file = questions_file
+        self.corpus_file = corpus_file
 
-    def run(self, corpus_file:str, query_file:str):
-        corpus = self._read_corpus(corpus_file)
-        chunks = self._chunk_corpus(corpus)
-        embeddings = self._generate_embeddings(chunks)
+        self.queries = self._read_queries()
+        self.embedded_queries = self._embed_queries(self.queries)
+
+    def run(self, chunk_num: int, chunk_size:int, chunk_overlap:int):
+        corpus_text = self._read_corpus()
+        chunks = self._chunk_corpus(corpus_text, chunk_size, chunk_overlap)
+        chunk_embeddings = self._generate_embeddings(chunks)
+             
+        retrieved_chunks = rep._compute_similarities(chunks=chunks, chunk_embeddings=chunk_embeddings, k=chunk_num)
+        recall_scores , precision_scores = self._evaluate(answers=[q.answers for q in self.queries], retrieved_chunks=retrieved_chunks)
         
+        recall_mean = np.mean(recall_scores)
+        recall_std = np.std(recall_scores)
 
+        precision_mean = np.mean(precision_scores)
+        precision_std = np.std(precision_scores)
 
-    def _read_corpus(self, filename:str) -> str:
-        with open(filename, 'r') as file:
+        print("Recall scores: ", recall_scores)
+        print("Precision scores: ", precision_scores)
+        print("Recall Mean: ", recall_mean)
+        print("Recall Std Mean: ", recall_std)
+        print("Precision Mean: ", precision_mean)
+        print("Precision Std: ", precision_std)
+        
+    
+
+    def _read_corpus(self) -> str:
+        with open(self.corpus_file, 'r') as file:
             text = file.read()
         return text
     
-    def _chunk_corpus(self, corpus:str, chunk_size: int, chunk_overlap: int) -> List[Tuple[str, int,int]]:
+    def _chunk_corpus(self, corpus:str, chunk_size: int, chunk_overlap: int) -> List[Excerpt]:
         chunker = FixedTokenChunker(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             encoding_name="cl100k_base"
         )
-        return [rigorous_document_search(corpus, chunk) for chunk in chunker.split_text(corpus)]
 
-    def _generate_embeddings(self, chunks: List[str]) -> NDArray[np.float64]:
+        res = [rigorous_document_search(corpus, chunk) for chunk in chunker.split_text(corpus)]
+        return [Excerpt(text=r[0], start=r[1], end=r[2]) for r in res]
+
+    def _generate_embeddings(self, chunks: List[Excerpt]) -> NDArray[np.float64]:
         model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-        embeddings = model.encode(chunks)
+        
+        texts = [chunk.text for chunk in chunks]
+        embeddings = model.encode(texts)    
         return embeddings
     
-    def _read_queries(self, filename:str) -> List[Query]:
-        df = pd.read_csv(filename)
+    def _read_queries(self) -> List[Query]:
+        df = pd.read_csv(self.questions_file)
         df = df[df['corpus_id'] == 'state_of_the_union']
         df['references'] = df['references'].apply(json.loads)
         queries: List[Query]= []
         for i in range(len(df)):
             row = df.iloc[i]
-            answers: List[Answer] = []
+            answers: List[Excerpt] = []
             for ref in row['references']:
-                answers.append(Answer(text=ref['content'], start=int(ref['start_index']), end=int(ref['end_index'])))
+                answers.append(Excerpt(text=ref['content'], start=int(ref['start_index']), end=int(ref['end_index'])))
             queries.append(Query(question=row['question'], answers=answers))
         return queries
 
@@ -84,40 +106,66 @@ class RetrievalEvaluationPipeline():
             embedded_queries.append((embedded_question, embedded_answers))
         return embedded_queries
     
-    def _compute_similarities(self, chunk_embeddings, queries, queries_embeddings, k:int):
-        question_embeddings = [q[0] for q in queries_embeddings]
+    def _compute_similarities(self, chunks: List[Excerpt], chunk_embeddings: List[NDArray], k: int):
+        question_embeddings = [q[0] for q in self.embedded_queries]
         cosine_similarities = util.cos_sim(question_embeddings, chunk_embeddings)
-        # Number of top results to return
-        top_k_indices = []
-        for i in range(len(queries_embeddings)):
-            top_k_indices.append(torch.topk(cosine_similarities[i], k=k))
-        return top_k_indices
+        
+        results = []
+        for i in range(len(self.embedded_queries)):
+            scores, indices = torch.topk(cosine_similarities[i], k=k)
+            top_chunks = []
+            for idx, score in zip(indices, scores):
+                chunk_idx = idx.item()
+                chunk = chunks[chunk_idx]
+                top_chunks.append(chunk)
 
+            results.append(top_chunks)
+        
+        return results
     
-    
+    def _evaluate(self, answers: List[List[Excerpt]], retrieved_chunks: List[List[Excerpt]]):
+        recall_scores = []
+        precision_scores = []
+        for i, query_answers in enumerate(answers):
+            chunks = retrieved_chunks[i]
+            unused_highlights = [(ans.start, ans.end) for ans in query_answers]
+            numerator_sets = []
+            denominator_chunks_sets = []
+            for ans in query_answers:
+                for chunk in chunks:
+                    # Calculate intersection between chunk and reference
+                    intersection = metrics.intersect_two_ranges((ans.start, ans.end), (chunk.start, chunk.end))
+                    
+                    if intersection is not None:
+                        # Remove intersection from unused highlights
+                        unused_highlights = metrics.difference(unused_highlights, intersection)
 
+                        # Add intersection to numerator sets
+                        numerator_sets = metrics.union_ranges([intersection] + numerator_sets)
+                        
+                        # Add chunk to denominator sets
+                        denominator_chunks_sets = metrics.union_ranges([(chunk.start, chunk.end)] + denominator_chunks_sets)
+            
+            if numerator_sets:
+                numerator_value = metrics.sum_of_ranges(numerator_sets)
+            else:
+                numerator_value = 0
 
+            recall_denominator = metrics.sum_of_ranges([(ans.start,ans.end) for ans in query_answers])
+            precision_denominator = metrics.sum_of_ranges([(chunk.start, chunk.end) for chunk in chunks])
+
+            recall_score = numerator_value / recall_denominator
+            recall_scores.append(recall_score)
+
+            precision_score = numerator_value / precision_denominator
+            precision_scores.append(precision_score)
+
+        return recall_scores, precision_scores
+
+            
 if __name__ == '__main__':
-    # solve()
-    # emb = RetrievalEvaluationPipeline()._generate_embeddings(["This is an example sentence", "Each sentence is converted"])
-    # print(f"emb shape is {emb.shape}")
-    # print(f"embediddngs are {emb}")
     rep = RetrievalEvaluationPipeline(None)
-    corpus = rep._read_corpus(_CORPUS_FILE)
-    chunks = rep._chunk_corpus(corpus, 300, 30)
-    embeddings = rep._generate_embeddings(chunks)
-    queries = rep._read_queries(_QUESTIONS_FILE)
-    embedded_queries = rep._embed_queries(queries)
-    top_k_indices = rep._compute_similarities(queries=queries, queries_embeddings=embedded_queries, chunk_embeddings=embeddings, k=3)
-    print(f"QUESTION: {queries[0].question}")
-
-    for ans in queries[0].answers:
-        print(f"ORIGINAL ANSWER: {ans.text} \n ORIGINAL ANSWER START INDEX: {ans.start} \n ORIGINAL ANSWER END INDEX: {ans.end}")
-    for id in top_k_indices[0].indices:
-        print(f"RETRIEVED ANSWER: {chunks[id]}")
-    
-    # print(f"embedded queries are {embedded_queries[1]}")
-    # print(f"embedded queries are {embedded_queries[1].shape}")
+    rep.run(5, 200, 50)
 
 
 
