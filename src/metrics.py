@@ -1,9 +1,4 @@
-import os
-import pandas as pd
-import json
-import numpy as np
 from typing import List
-from importlib import resources
 
 def sum_of_ranges(ranges):
     return sum(end - start for start, end in ranges)

@@ -30,6 +30,9 @@ class Query:
             answers += f"{str(ans)}\n"
         return f"QUESTION: {self.question} \n {answers}"
 
+Recall = Tuple[float, float]
+Precision = Tuple[float, float]
+
 class RetrievalEvaluationPipeline():
 
     def __init__(self, embedding_function, questions_file = 'datasets/questions_df.csv', corpus_file = 'datasets/state_of_the_union.md'):
@@ -39,12 +42,15 @@ class RetrievalEvaluationPipeline():
         self.queries = self._read_queries()
         self.embedded_queries = self._embed_queries(self.queries)
 
-    def run(self, chunk_num: int, chunk_size:int, chunk_overlap:int):
+    def run(self, chunk_num: int, chunk_size:int, chunk_overlap:int) -> Tuple[Recall, Precision]:
         corpus_text = self._read_corpus()
         chunks = self._chunk_corpus(corpus_text, chunk_size, chunk_overlap)
         chunk_embeddings = self._generate_embeddings(chunks)
              
         retrieved_chunks = rep._compute_similarities(chunks=chunks, chunk_embeddings=chunk_embeddings, k=chunk_num)
+        print(f"retrievedd cchunks size {len(retrieved_chunks)}")
+        for rc in retrieved_chunks:
+            print(f"rc size is {len(rc)}")
         recall_scores , precision_scores = self._evaluate(answers=[q.answers for q in self.queries], retrieved_chunks=retrieved_chunks)
         
         recall_mean = np.mean(recall_scores)
@@ -53,12 +59,13 @@ class RetrievalEvaluationPipeline():
         precision_mean = np.mean(precision_scores)
         precision_std = np.std(precision_scores)
 
-        print("Recall scores: ", recall_scores)
-        print("Precision scores: ", precision_scores)
-        print("Recall Mean: ", recall_mean)
-        print("Recall Std Mean: ", recall_std)
-        print("Precision Mean: ", precision_mean)
-        print("Precision Std: ", precision_std)
+        # print("Recall scores: ", recall_scores)
+        # print("Precision scores: ", precision_scores)
+        # print("Recall Mean: ", recall_mean)
+        # print("Recall Std Mean: ", recall_std)
+        # print("Precision Mean: ", precision_mean)
+        # print("Precision Std: ", precision_std)
+        return ((recall_mean, recall_std), (precision_mean, precision_std))
         
     
 
@@ -165,8 +172,26 @@ class RetrievalEvaluationPipeline():
             
 if __name__ == '__main__':
     rep = RetrievalEvaluationPipeline(None)
-    rep.run(5, 200, 50)
 
+    results = []
 
+    for chunk_size in [200, 300, 400, 500]:
+        for overlap in [50, 100, 150]:
+            for num_chunks in [5, 10, 15]:
+                print(f"chunk_size={chunk_size} overlap={overlap} num_chunks={num_chunks}")
+                recall_data, precision_data = rep.run(num_chunks, chunk_size, overlap)
+                recall_mean, recall_std = recall_data[0], recall_data[1]
+                precision_mean, precision_std = precision_data[0], precision_data[1]  # Fixed the variable name
+                break
+                results.append({
+                    "chunk_size": chunk_size,
+                    "overlap": overlap,
+                    "num_chunks": num_chunks,
+                    "recall_mean": recall_mean,
+                    "recall_std": recall_std,
+                    "precision_mean": precision_mean,
+                    "precision_std": precision_std
+                })
 
-
+    df = pd.DataFrame(results)
+    df.to_csv("grid_search_results.csv", index=False)
