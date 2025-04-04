@@ -155,8 +155,8 @@ if __name__ == '__main__':
     
     rep = RetrievalEvaluationPipeline(
         embedding_function,
-        corpus_file='data/chatlogs.md',
-        questions_label='chatlogs'
+        corpus_file='data/wikitexts.md',
+        questions_label='wikitexts'
     )
 
     results = []
@@ -179,4 +179,4 @@ if __name__ == '__main__':
                 })
 
     df = pd.DataFrame(results)
-    df.to_csv("results/results-chatlogs.csv", index=False)
+    df.to_csv("results/results-wikitexts.csv", index=False)
