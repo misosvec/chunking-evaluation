@@ -4,3 +4,4 @@ tiktoken
 attrs
 pandas
 fuzzywuzzy
+torch

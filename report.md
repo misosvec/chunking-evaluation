@@ -1,1 +1,0 @@
-https://github.com/UKPLab/sentence-transformers/issues/405
